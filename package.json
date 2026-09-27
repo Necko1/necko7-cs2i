@@ -1,0 +1,9 @@
+{
+  "name": "necko7-cs2i",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "dev": "vite --host 127.0.0.1 --port 1420 --strictPort", "build": "tsc --noEmit && vite build", "typecheck": "tsc --noEmit", "tauri": "tauri" },
+  "dependencies": { "@tauri-apps/api": "^2" },
+  "devDependencies": { "@tauri-apps/cli": "^2", "typescript": "~6.0.2", "vite": "^8.2.2" }
+}

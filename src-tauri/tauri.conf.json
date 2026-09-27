@@ -1,0 +1,54 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "necko7-cs2i",
+  "version": "0.1.0",
+  "identifier": "moe.necko7.desktop",
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist",
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "title": "necko7 CS2 Integration",
+        "width": 460,
+        "height": 700,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "installer-hooks.nsh"
+      }
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "necko7-cs2i"
+        ]
+      }
+    }
+  }
+}
