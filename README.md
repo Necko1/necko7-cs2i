@@ -78,7 +78,7 @@ The current-user NSIS bundle registers `necko7-cs2i://` and uses Tauri's normal 
 
 The GitHub Actions workflow `.github/workflows/release-installer.yml` builds the Windows x64 NSIS installer when a GitHub release is **published**, including prereleases, and attaches the generated `*-setup.exe` to that same release. Draft releases do not trigger it. It checks out the release tag, installs locked npm/Rust dependencies, and uses the automatic `GITHUB_TOKEN` with `contents: write`; no personal access token is required. Rerunning a failed workflow replaces an existing asset with the same name. The workflow must be committed and pushed before publishing a release that includes it. Before tagging a new version, update the versions in `package.json`/`package-lock.json`, `src-tauri/Cargo.toml`/`Cargo.lock`, and `src-tauri/tauri.conf.json`.
 
-After publication, configure frontend `VITE_CS2_DOWNLOAD_URL` or Docker/runtime `CS2_DOWNLOAD_URL` with the installer's real HTTPS release-asset URL. Until configured, the dashboard clearly reports that the download is not published. Existing backend/frontend pipelines continue distributing Docker images. Installer code signing is not configured.
+The dashboard defaults to `https://github.com/Necko1/necko7-cs2i/releases/latest/download/necko7-cs2i-windows-x64-setup.exe`. Optional frontend `VITE_CS2_DOWNLOAD_URL` or Docker/runtime `CS2_DOWNLOAD_URL` can override it. Publish a stable release containing this asset before distributing the download. Existing backend/frontend pipelines continue distributing Docker images. Installer code signing is not configured.
 
 ## Checks
 
@@ -138,4 +138,19 @@ Implementation references: [Tauri deep linking/single instance](https://v2.tauri
 - Desktop: Rust `app`, `cloud`, `deep_link`, `gsi`, `gsi_config`, `identity`, `settings`, `steam`, `tray`; TypeScript `main`/`ui`; Tauri capabilities/config, NSIS hook, VDF fixtures, and npm build setup.
 - New desktop crates: Tauri deep-link/single-instance/autostart plugins; `tokio`, `tokio-util`, `axum`, `reqwest`, `ed25519-dalek`, `rand`, `base64`, `chrono`, `uuid`, `url`, `keyvalues-parser`, `subtle`, `tracing`, `tracing-subscriber`, `zeroize`, Windows `keyring`/`winreg`. npm: `@tauri-apps/api`, `@tauri-apps/cli`, `typescript`, `vite`. Lockfiles record exact resolutions.
 
-Validation performed on Windows: all 90 backend tests including PostgreSQL integration tests passed; the final CS2-focused rerun also passed. All 60 existing/new dashboard Playwright tests passed. Desktop's seven normal tests passed, and the eighth Windows Credential Manager test passed when explicitly enabled. Cargo check, desktop fmt/strict Clippy, TypeScript checks and both production frontend builds passed. The NSIS installer was built. Backend Clippy and dashboard lint complete with existing warnings outside the CS2 code; repository-wide backend fmt check reports existing formatting differences, while the new CS2 modules pass rustfmt. Dashboard build retains its existing large-chunk warning. No installer installation or live Twitch/CS2 game session was performed.
+Focused QA validation on Windows: all 91 backend tests including disposable PostgreSQL integration tests passed, followed by a five-test CS2 rerun. The complete 64-test dashboard Playwright suite passed; the expanded CS2 subset was rerun separately. Desktop has nine passing tests and one explicitly ignored Credential Manager test. Cargo check, desktop fmt/strict Clippy, TypeScript checks and both production frontend builds passed. The NSIS installer was built. Desktop DOM/modal behavior was checked in Edge with mocked Tauri IPC, not through the installed native app. Backend Clippy and dashboard lint complete with existing warnings outside the CS2 code; repository-wide backend fmt check reports existing formatting differences, while the new CS2 modules pass rustfmt. Dashboard build retains its existing large-chunk warning. No installer installation or live Twitch/CS2 game session was performed.
+
+## Windows QA after installation
+
+Heartbeat checks the paired device at startup, every 45 seconds, on app resume and when the window is shown/focused (focus checks coalesce for five seconds). It uses the existing Ed25519 identity and an independent replay session. A 401/403 clears only the local channel association; the protected identity and owned GSI config remain. Network failures preserve the association and show a connection error.
+
+Manual acceptance on a real Windows installation (not covered by Rust unit tests):
+
+- Enable both Start with Windows and Minimize to tray, then close with the native X. The same process/tray, GSI listener and heartbeat must remain running. Tray Open must restore the same window; Tray Exit must terminate it. Repeat close/open several times, including while GSI is flowing.
+- With minimize disabled, X must terminate gracefully. On Windows login with autostart enabled, the app must stay hidden in the tray.
+- With CS2 closed, dashboard Unpair must clear the desktop account within about a minute or upon Tray Open. A valid new link must then pair successfully.
+- Open `necko7-cs2i://pair?code=4EME-GX7G` with an actual currently valid code both from a cold start and while tray-hidden. Invalid/expired codes must show an error beside pairing, not a syntax error. A still-active account must report Already paired; revoke/unpair it before replacement.
+- Settings must open a centered modal with backdrop. Verify Escape, backdrop dismissal, keyboard focus containment/return and no page scrollbar in normal paired/unpaired states.
+- Uninstall must remove only the owned GSI config and application files; unrelated Steam/CS2 files must remain.
+
+Release publishing uploads both the versioned installer and `necko7-cs2i-windows-x64-setup.exe`. The dashboard uses GitHub's latest-release download URL; publish a non-prerelease containing that stable asset before using it in production.

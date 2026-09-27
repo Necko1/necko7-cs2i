@@ -3,7 +3,9 @@ mod cloud;
 mod deep_link;
 mod gsi;
 mod gsi_config;
+mod heartbeat;
 mod identity;
+mod lifecycle;
 mod settings;
 mod steam;
 mod tray;
@@ -57,6 +59,7 @@ pub fn run() {
             tauri::async_runtime::spawn_blocking(move || {
                 let _ = discovery.discover();
             });
+            tauri::async_runtime::spawn(state.tasks.track_future(heartbeat::run(state.clone())));
             tauri::async_runtime::spawn(state.tasks.track_future(gsi::serve(state.clone())));
             tauri::async_runtime::spawn(state.tasks.track_future(gsi::forward(state.clone(), rx)));
             let handle = application.handle().clone();
@@ -76,21 +79,44 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            if let tauri::WindowEvent::Focused(true) = event {
                 if let Some(state) = window.app_handle().try_state::<app::Shared>() {
-                    if state.inner.lock().unwrap().settings.minimize_to_tray {
-                        api.prevent_close();
-                        let _ = window.hide();
-                    } else {
-                        api.prevent_close();
-                        app::shutdown(window.app_handle());
+                    state.heartbeat_requested.notify_one();
+                }
+            }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Cancel destruction synchronously, before any lock or deferred work.
+                api.prevent_close();
+                if let Some(state) = window.app_handle().try_state::<app::Shared>() {
+                    let minimize = state.inner.lock().unwrap().settings.minimize_to_tray;
+                    match lifecycle::close_action(
+                        minimize,
+                        state.quitting.load(std::sync::atomic::Ordering::SeqCst),
+                    ) {
+                        lifecycle::CloseAction::Hide => {
+                            // Windows visibility changes may synchronously emit window events.
+                            // Leave the close callback/listener locks before calling hide.
+                            let window = window.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let _ = window.hide();
+                            });
+                        }
+                        lifecycle::CloseAction::Shutdown => app::shutdown(window.app_handle()),
+                        lifecycle::CloseAction::Quitting => {}
                     }
+                } else {
+                    window.app_handle().exit(0);
                 }
             }
         })
         .build(tauri::generate_context!())
         .expect("Cannot initialize desktop application")
         .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Resumed) {
+                if let Some(state) = app.try_state::<app::Shared>() {
+                    state.heartbeat_requested.notify_one();
+                }
+            }
             if matches!(event, tauri::RunEvent::Exit) {
                 if let Some(state) = app.try_state::<app::Shared>() {
                     state.cancel.cancel();

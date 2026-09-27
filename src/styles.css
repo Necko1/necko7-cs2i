@@ -1,13 +1,14 @@
 :root { font-family: system-ui, sans-serif; color: #e9ecf4; background: #11141c; font-synthesis: none; color-scheme: dark; }
 * { box-sizing: border-box; }
-body { margin: 0; }
-main { padding: 24px; max-width: 520px; margin: auto; }
+html, body { margin: 0; height: 100%; overflow: hidden; }
+main { padding: 18px 22px; max-width: 520px; margin: auto; height: 100%; overflow: auto; scrollbar-width: none; }
+main::-webkit-scrollbar, dialog::-webkit-scrollbar { display: none; }
 header { display: flex; gap: 10px; align-items: center; font-size: 13px; color: #aab3c5; }
 .brand { color: #d5ff70; font-weight: 800; font-size: 21px; }
 header button { margin-left: auto; width: 38px; padding: 8px; }
-h1 { font-size: 22px; margin: 26px 0 18px; }
+h1 { font-size: 18px; margin: 0; }
 h2 { font-size: 15px; margin: 0 0 10px; }
-section { background: #1b202c; border: 1px solid #30384a; padding: 18px; margin: 14px 0; border-radius: 12px; }
+section { background: #1b202c; border: 1px solid #30384a; padding: 14px; margin: 14px 0; border-radius: 12px; }
 p { font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; margin: 8px 0; }
 .muted, footer { color: #aab3c5; }
 label { display: block; margin: 8px 0; font-size: 13px; }
@@ -23,3 +24,13 @@ button:focus-visible, input:focus-visible { outline: 2px solid #d5ff70; outline-
 .toggle { display: flex; align-items: center; gap: 9px; margin-bottom: 16px; }
 footer { text-align: center; font-size: 13px; margin-top: 24px; }
 [hidden] { display: none !important; }
+
+header { justify-content: space-between; }
+[role=alert]:empty { display: none; }
+.status-row { display: grid; grid-template-columns: 48px 1fr; gap: 10px; padding: 10px 0; border-bottom: 1px solid #30384a; font-size: 13px; }
+.status-row p { margin: 0 0 4px; }
+#retry { margin: 8px 0 0 58px; }
+dialog { color: #e9ecf4; background: #1b202c; border: 1px solid #46516a; border-radius: 12px; padding: 20px; width: calc(100% - 40px); max-width: 390px; max-height: calc(100% - 40px); overflow: auto; scrollbar-width: none; }
+dialog::backdrop { background: rgb(0 0 0 / 65%); }
+.dialog-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+#settings-error { color: #ffa7a7; }

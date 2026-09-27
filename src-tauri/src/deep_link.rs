@@ -22,7 +22,7 @@ pub fn parse(input: &str) -> Result<String, String> {
     let params: Vec<_> = url.query_pairs().collect();
     if url.scheme() != "necko7-cs2i"
         || url.host_str() != Some("pair")
-        || !url.path().is_empty()
+        || !matches!(url.path(), "" | "/")
         || !url.username().is_empty()
         || url.password().is_some()
         || url.port().is_some()
@@ -39,11 +39,22 @@ mod tests {
     use super::*;
     #[test]
     fn links() {
+        for input in [
+            "necko7-cs2i://pair?code=4EME-GX7G",
+            "necko7-cs2i://pair/?code=4EME-GX7G",
+        ] {
+            assert_eq!(parse(input).unwrap(), "4EME-GX7G");
+            let delivered = url::Url::parse(input).unwrap().to_string();
+            assert_eq!(parse(&delivered).unwrap(), "4EME-GX7G");
+        }
         assert_eq!(
             parse("necko7-cs2i://pair?code=abcd-2345").unwrap(),
             "ABCD-2345"
         );
         for input in [
+            "necko7-cs2i:/pair?code=4EME-GX7G",
+            "necko7-cs2i://pair?code=4EME-GX7G#x",
+            "necko7-cs2i://pair:123?code=4EME-GX7G",
             "https://pair?code=ABCD2345",
             "necko7-cs2i://evil?code=ABCD2345",
             "necko7-cs2i://pair?code=ABCD2345&x=1",

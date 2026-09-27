@@ -61,7 +61,9 @@ jobs:
           $tauriConfig = Get-Content -LiteralPath 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json
           $installerName = "$($tauriConfig.productName)_$($tauriConfig.version)_x64-setup.exe"
           $installerPath = (Get-Item -LiteralPath (Join-Path 'src-tauri/target/release/bundle/nsis' $installerName) -ErrorAction Stop).FullName
-          gh release upload "$env:RELEASE_TAG" "$installerPath" --repo "$env:RELEASE_REPOSITORY" --clobber
+          $stableInstallerPath = Join-Path (Split-Path $installerPath) 'necko7-cs2i-windows-x64-setup.exe'
+          Copy-Item -LiteralPath $installerPath -Destination $stableInstallerPath
+          gh release upload "$env:RELEASE_TAG" "$installerPath" "$stableInstallerPath" --repo "$env:RELEASE_REPOSITORY" --clobber
           if ($LASTEXITCODE -ne 0) {
             throw "Failed to attach the installer to the release."
           }

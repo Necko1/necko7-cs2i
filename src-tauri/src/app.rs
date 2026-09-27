@@ -6,7 +6,10 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 use tauri::{AppHandle, Manager};
 use tokio::sync::{watch, Mutex as AsyncMutex};
@@ -14,6 +17,8 @@ use tokio_util::sync::CancellationToken;
 pub type Shared = Arc<App>;
 pub struct App {
     pub inner: Mutex<Inner>,
+    pub quitting: AtomicBool,
+    pub heartbeat_requested: tokio::sync::Notify,
     pub operations: AsyncMutex<()>,
     pub client: reqwest::Client,
     pub base: Result<String, String>,
@@ -28,6 +33,8 @@ pub struct Inner {
     pub key: Result<ed25519_dalek::SigningKey, String>,
     pub session: uuid::Uuid,
     pub seq: i64,
+    pub heartbeat_session: uuid::Uuid,
+    pub heartbeat_seq: i64,
     pub gsi: String,
     pub listener: String,
     pub cloud: String,
@@ -71,6 +78,8 @@ impl App {
                     key,
                     session: uuid::Uuid::new_v4(),
                     seq: 0,
+                    heartbeat_session: uuid::Uuid::new_v4(),
+                    heartbeat_seq: 0,
                     gsi: "Discovering CS2…".into(),
                     listener: "Starting…".into(),
                     cloud: "Waiting for GSI".into(),
@@ -78,6 +87,8 @@ impl App {
                     pairing_busy: false,
                     error: None,
                 }),
+                quitting: AtomicBool::new(false),
+                heartbeat_requested: tokio::sync::Notify::new(),
                 operations: AsyncMutex::new(()),
                 client: reqwest::Client::builder()
                     .timeout(std::time::Duration::from_secs(8))
@@ -133,16 +144,25 @@ impl App {
             .as_ref()
             .ok_or("Pair a channel first")?
             .device_id;
-        inner.seq = inner
-            .seq
-            .checked_add(1)
-            .ok_or("Sequence exhausted; restart the app")?;
+        let (session_id, seq) = if action == Some("heartbeat") {
+            inner.heartbeat_seq = inner
+                .heartbeat_seq
+                .checked_add(1)
+                .ok_or("Heartbeat sequence exhausted")?;
+            (inner.heartbeat_session, inner.heartbeat_seq)
+        } else {
+            inner.seq = inner
+                .seq
+                .checked_add(1)
+                .ok_or("Sequence exhausted; restart the app")?;
+            (inner.session, inner.seq)
+        };
         cloud::sign(
             inner.key.as_ref().map_err(Clone::clone)?,
             &cloud::Envelope {
                 device_id: device,
-                session_id: inner.session,
-                seq: inner.seq,
+                session_id,
+                seq,
                 sent_at: chrono::Utc::now(),
                 gsi,
                 action,
@@ -152,11 +172,16 @@ impl App {
     pub fn clear_pairing(&self) -> Result<(), String> {
         let mut inner = self.inner.lock().unwrap();
         inner.settings.pairing = None;
+        inner.pairing_code.clear();
+        inner.error = None;
         self.pending.send_replace(None);
         inner.settings.save(&self.path)
     }
 }
 pub fn show(app: &AppHandle) {
+    if let Some(state) = app.try_state::<Shared>() {
+        state.heartbeat_requested.notify_one();
+    }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -165,6 +190,9 @@ pub fn show(app: &AppHandle) {
 }
 pub fn shutdown(app: &AppHandle) {
     let state = app.state::<Shared>().inner().clone();
+    if state.quitting.swap(true, Ordering::SeqCst) {
+        return;
+    }
     state.cancel.cancel();
     state.tasks.close();
     let handle = app.clone();
@@ -205,6 +233,9 @@ pub fn status(app: AppHandle, state: tauri::State<'_, Shared>) -> Status {
 pub async fn pair_device(state: Shared, code: String) -> Result<(), String> {
     let _guard = state.operations.lock().await;
     let code = crate::deep_link::normalize(&code)?;
+    if state.inner.lock().unwrap().settings.pairing.is_some() {
+        crate::heartbeat::check(&state).await?;
+    }
     let public_key = {
         let mut inner = state.inner.lock().unwrap();
         if inner.settings.pairing.is_some() {
@@ -241,7 +272,8 @@ pub async fn pair_device(state: Shared, code: String) -> Result<(), String> {
         Ok(pairing) => {
             inner.settings.pairing = Some(pairing);
             inner.pairing_code.clear();
-            inner.cloud = "Paired — waiting for GSI".into();
+            inner.cloud = "Paired — checking desktop connection".into();
+            state.heartbeat_requested.notify_one();
             inner
                 .settings
                 .save(&state.path)
