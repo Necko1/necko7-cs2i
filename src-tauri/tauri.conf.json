@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "necko7-cs2i",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "moe.necko7.desktop",
   "build": {
     "beforeBuildCommand": "npm run build",
@@ -13,9 +13,12 @@
     "withGlobalTauri": false,
     "windows": [
       {
-        "title": "necko7 CS2 Integration",
-        "width": 460,
-        "height": 700,
+        "title": "necko7 CS2",
+        "width": 360,
+        "height": 280,
+        "resizable": false,
+        "maximizable": false,
+        "fullscreen": false,
         "visible": false
       }
     ],

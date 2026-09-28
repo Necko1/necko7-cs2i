@@ -72,7 +72,7 @@ npm ci
 npm run tauri -- build --bundles nsis
 ```
 
-Output: `src-tauri/target/release/bundle/nsis/necko7-cs2i_0.1.0_x64-setup.exe`.
+Output: `src-tauri/target/release/bundle/nsis/necko7-cs2i_0.2.0_x64-setup.exe`.
 
 The current-user NSIS bundle registers `necko7-cs2i://` and uses Tauri's normal uninstall registration cleanup. A minimal pre-uninstall hook first stops the running app through Tauri's standard process check, then invokes Rust cleanup to disable autostart and remove only an exact matching owned config. Upgrade uninstalls skip that cleanup. User settings/key are retained for reinstall; revoke the device in the dashboard if retiring the computer.
 

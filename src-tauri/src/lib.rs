@@ -23,6 +23,7 @@ pub fn run() {
         }));
     }
     builder
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(
             tauri_plugin_autostart::Builder::new()
@@ -35,10 +36,12 @@ pub fn run() {
             app::unpair,
             app::preferences,
             app::retry_discovery,
-            app::reset_identity
+            app::reset_identity,
+            app::open_dashboard,
+            app::open_channel
         ])
         .setup(move |application| {
-            let dir = application.path().app_data_dir()?;
+            let dir = app::development_dir().unwrap_or(application.path().app_data_dir()?);
             std::fs::create_dir_all(&dir)?;
             let path = dir.join("settings.json");
             if cleanup {

@@ -12,7 +12,7 @@ use std::{
     },
 };
 use tauri::{AppHandle, Manager};
-use tokio::sync::{watch, Mutex as AsyncMutex};
+use tokio::sync::{mpsc, Mutex as AsyncMutex};
 use tokio_util::sync::CancellationToken;
 pub type Shared = Arc<App>;
 pub struct App {
@@ -24,7 +24,7 @@ pub struct App {
     pub base: Result<String, String>,
     pub path: PathBuf,
     pub port: u16,
-    pub pending: watch::Sender<Option<cloud::Signed>>,
+    pub pending: mpsc::Sender<cloud::Signed>,
     pub cancel: CancellationToken,
     pub tasks: tokio_util::task::TaskTracker,
 }
@@ -38,6 +38,9 @@ pub struct Inner {
     pub gsi: String,
     pub listener: String,
     pub cloud: String,
+    pub last_gsi: Option<std::time::Instant>,
+    pub last_gsi_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub forwarding_error: Option<String>,
     pub pairing_code: String,
     pub pairing_busy: bool,
     pub error: Option<String>,
@@ -50,6 +53,9 @@ pub struct Status {
     gsi: String,
     listener: String,
     cloud: String,
+    gsi_active: bool,
+    last_gsi_at: Option<chrono::DateTime<chrono::Utc>>,
+    forwarding_error: Option<String>,
     pairing_code: String,
     pairing_busy: bool,
     error: Option<String>,
@@ -57,11 +63,15 @@ pub struct Status {
     version: &'static str,
 }
 impl App {
-    pub fn new(path: PathBuf) -> Result<(Shared, watch::Receiver<Option<cloud::Signed>>), String> {
+    pub fn new(path: PathBuf) -> Result<(Shared, mpsc::Receiver<cloud::Signed>), String> {
         let settings = Settings::load(&path)?;
-        let key = crate::identity::load(settings.pairing.is_some());
+        let key = if development_dir().is_some() {
+            Ok(ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng))
+        } else {
+            crate::identity::load(settings.pairing.is_some())
+        };
         settings.save(&path)?;
-        let (pending, rx) = watch::channel(None);
+        let (pending, rx) = mpsc::channel(64);
         let port = if cfg!(debug_assertions) {
             std::env::var("CS2_GSI_PORT")
                 .ok()
@@ -83,6 +93,9 @@ impl App {
                     gsi: "Discovering CS2…".into(),
                     listener: "Starting…".into(),
                     cloud: "Waiting for GSI".into(),
+                    last_gsi: None,
+                    last_gsi_at: None,
+                    forwarding_error: None,
                     pairing_code: String::new(),
                     pairing_busy: false,
                     error: None,
@@ -107,7 +120,11 @@ impl App {
     }
     pub fn discover(&self) -> Result<(), String> {
         let mut inner = self.inner.lock().unwrap();
-        let result = crate::steam::discover().and_then(|dir| {
+        let directory = development_dir()
+            .map(|dir| dir.join("cfg"))
+            .map(Ok)
+            .unwrap_or_else(crate::steam::discover);
+        let result = directory.and_then(|dir| {
             crate::gsi_config::install(&dir, &inner.settings.local_token, self.port)
         });
         match result {
@@ -174,7 +191,9 @@ impl App {
         inner.settings.pairing = None;
         inner.pairing_code.clear();
         inner.error = None;
-        self.pending.send_replace(None);
+        inner.last_gsi = None;
+        inner.last_gsi_at = None;
+        inner.forwarding_error = None;
         inner.settings.save(&self.path)
     }
 }
@@ -223,11 +242,109 @@ pub fn status(app: AppHandle, state: tauri::State<'_, Shared>) -> Status {
         gsi,
         listener: inner.listener.clone(),
         cloud: inner.cloud.clone(),
+        gsi_active: gsi_fresh(inner.last_gsi.map(|time| time.elapsed())),
+        last_gsi_at: inner.last_gsi_at,
+        forwarding_error: inner.forwarding_error.clone(),
         pairing_code: inner.pairing_code.clone(),
         pairing_busy: inner.pairing_busy,
         error: inner.error.clone(),
         identity_error: inner.key.as_ref().err().cloned(),
         version: env!("CARGO_PKG_VERSION"),
+    }
+}
+
+pub fn development_dir() -> Option<PathBuf> {
+    if cfg!(debug_assertions) {
+        std::env::var_os("CS2_DEVELOPMENT_DIR").map(PathBuf::from)
+    } else {
+        None
+    }
+}
+
+fn gsi_fresh(age: Option<std::time::Duration>) -> bool {
+    age.is_some_and(|age| age < std::time::Duration::from_secs(60))
+}
+
+#[tauri::command]
+pub fn open_dashboard(app: AppHandle, state: tauri::State<'_, Shared>) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let base = state.base.as_ref().map_err(Clone::clone)?;
+    let origin = std::env::var("CS2_DASHBOARD_URL").unwrap_or_else(|_| base.clone());
+    let url = dashboard_url(&origin)?;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|_| "Unable to open the dashboard in your browser".into())
+}
+fn dashboard_url(origin: &str) -> Result<String, String> {
+    let mut url = url::Url::parse(origin).map_err(|_| "Invalid dashboard URL")?;
+    if !["https", "http"].contains(&url.scheme())
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err("Invalid dashboard URL".into());
+    }
+    url.set_path("/scripts/cs2");
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url.to_string())
+}
+
+#[tauri::command]
+pub fn open_channel(app: AppHandle, state: tauri::State<'_, Shared>) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let inner = state.inner.lock().unwrap();
+    let login = &inner
+        .settings
+        .pairing
+        .as_ref()
+        .ok_or("Pair a channel first")?
+        .channel
+        .username;
+    if !login
+        .bytes()
+        .all(|c| c.is_ascii_alphanumeric() || c == b'_')
+    {
+        return Err("Invalid channel login".into());
+    }
+    app.opener()
+        .open_url(format!("https://www.twitch.tv/{login}"), None::<&str>)
+        .map_err(|_| "Unable to open Twitch in your browser".into())
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+    #[test]
+    fn local_receipt_freshness_expires_at_sixty_seconds() {
+        assert!(!gsi_fresh(None));
+        assert!(gsi_fresh(Some(std::time::Duration::from_secs(59))));
+        assert!(!gsi_fresh(Some(std::time::Duration::from_secs(60))));
+    }
+    #[test]
+    fn dashboard_uses_configured_origin_without_credentials_or_query_data() {
+        assert_eq!(
+            dashboard_url("https://dashboard.example.test/old?code=private#frag").unwrap(),
+            "https://dashboard.example.test/scripts/cs2"
+        );
+        assert_eq!(
+            dashboard_url("http://127.0.0.1:4173").unwrap(),
+            "http://127.0.0.1:4173/scripts/cs2"
+        );
+        assert!(dashboard_url("https://user:password@example.test").is_err());
+        assert!(dashboard_url("javascript:alert(1)").is_err());
+    }
+    #[test]
+    fn main_window_is_fixed_size_and_not_maximizable() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let window = &config["app"]["windows"][0];
+        assert_eq!(window["title"], "necko7 CS2");
+        assert_eq!(window["width"], 360);
+        assert_eq!(window["height"], 280);
+        assert_eq!(window["resizable"], false);
+        assert_eq!(window["maximizable"], false);
+        assert_eq!(window["fullscreen"], false);
     }
 }
 pub async fn pair_device(state: Shared, code: String) -> Result<(), String> {

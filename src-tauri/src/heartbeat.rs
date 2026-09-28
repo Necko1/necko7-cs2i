@@ -111,7 +111,7 @@ mod tests {
                 avatar_url: None,
             },
         });
-        let (pending, _) = tokio::sync::watch::channel(None);
+        let (pending, _) = tokio::sync::mpsc::channel(64);
         let state = Arc::new(App {
             inner: Mutex::new(Inner {
                 settings,
@@ -123,6 +123,9 @@ mod tests {
                 gsi: String::new(),
                 listener: String::new(),
                 cloud: String::new(),
+                last_gsi: None,
+                last_gsi_at: None,
+                forwarding_error: None,
                 pairing_code: String::new(),
                 pairing_busy: false,
                 error: None,

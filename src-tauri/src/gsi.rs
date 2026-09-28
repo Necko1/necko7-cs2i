@@ -14,8 +14,19 @@ pub fn authenticated(value: &serde_json::Value, token: &str) -> bool {
 }
 async fn receive(
     State(state): State<Shared>,
-    Json(mut payload): Json<serde_json::Value>,
+    payload: Result<Json<serde_json::Value>, axum::extract::rejection::JsonRejection>,
 ) -> StatusCode {
+    let Json(mut payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => {
+            tracing::warn!(
+                stage = "local_decode",
+                reason = "invalid_json",
+                "Local GSI request could not be decoded"
+            );
+            return StatusCode::BAD_REQUEST;
+        }
+    };
     if !authenticated(&payload, &state.inner.lock().unwrap().settings.local_token) {
         return StatusCode::UNAUTHORIZED;
     }
@@ -23,9 +34,28 @@ async fn receive(
     if let Some(obj) = payload.as_object_mut() {
         obj.remove("auth");
     }
-    state.inner.lock().unwrap().listener = "Receiving CS2 GSI".into();
+    {
+        let mut inner = state.inner.lock().unwrap();
+        inner.listener = "Receiving CS2 GSI".into();
+        inner.last_gsi = Some(std::time::Instant::now());
+        inner.last_gsi_at = Some(chrono::Utc::now());
+    }
+    // Preserve every accepted boundary in order; a watch channel coalesces them.
+    let permit = match state.pending.try_reserve() {
+        Ok(permit) => permit,
+        Err(_) => {
+            tracing::warn!(
+                stage = "local_queue",
+                reason = "queue_full",
+                "GSI forwarding queue full; request rejected for retry"
+            );
+            state.inner.lock().unwrap().forwarding_error =
+                Some("Forwarding is falling behind. Check your connection.".into());
+            return StatusCode::SERVICE_UNAVAILABLE;
+        }
+    };
     if let Ok(signed) = state.signed(Some(payload), None) {
-        state.pending.send_replace(Some(signed));
+        permit.send(signed);
     }
     StatusCode::NO_CONTENT
 }
@@ -49,16 +79,11 @@ pub async fn serve(state: Shared) {
         .with_graceful_shutdown(state.cancel.clone().cancelled_owned())
         .await;
 }
-pub async fn forward(
-    state: Shared,
-    mut rx: tokio::sync::watch::Receiver<Option<crate::cloud::Signed>>,
-) {
+pub async fn forward(state: Shared, mut rx: tokio::sync::mpsc::Receiver<crate::cloud::Signed>) {
     loop {
-        tokio::select! { _ = state.cancel.cancelled() => break, changed = rx.changed() => { if changed.is_err() { break; } } }
-        let signed = rx.borrow_and_update().clone();
-        let Some(signed) = signed else {
-            continue;
-        };
+        let signed = tokio::select! { _ = state.cancel.cancelled() => break, signed = rx.recv() => { let Some(signed) = signed else { break }; signed } };
+        let diagnostic: serde_json::Value =
+            serde_json::from_slice(&signed.body).unwrap_or_default();
         let guard = state.operations.lock().await;
         if state
             .inner
@@ -74,7 +99,7 @@ pub async fn forward(
         }
         let result = match &state.base {
             Ok(base) => {
-                tokio::select! { _ = state.cancel.cancelled() => break, result = crate::cloud::send(&state.client,base,"cs2/gsi",signed) => result }
+                tokio::select! { _ = state.cancel.cancelled() => break, result = crate::cloud::send(&state.client,base,"cs2/gsi",signed.clone()) => result }
             }
             Err(error) => Err(error.clone()),
         };
@@ -99,7 +124,14 @@ pub async fn forward(
                 error
             }
         };
-        state.inner.lock().unwrap().cloud = status;
+        if backoff {
+            tracing::warn!(device_id=%signed.device_id, session_id=?diagnostic["session_id"], seq=?diagnostic["seq"], stage="forward", reason=%status, "GSI forwarding failed");
+        }
+        {
+            let mut inner = state.inner.lock().unwrap();
+            inner.forwarding_error = backoff.then(|| status.clone());
+            inner.cloud = status;
+        }
         drop(guard);
         if backoff {
             tokio::select! { _ = state.cancel.cancelled() => break, _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {} }
@@ -120,5 +152,82 @@ mod tests {
             "secret"
         ));
         assert!(!authenticated(&serde_json::json!({}), "secret"));
+    }
+    #[tokio::test]
+    async fn forwarding_queue_preserves_round_boundaries_and_rejects_overflow() {
+        use crate::{
+            app::{App, Inner},
+            settings::{Channel, Pairing, Settings},
+        };
+        use std::sync::{atomic::AtomicBool, Arc, Mutex};
+        let dir = std::env::temp_dir().join(format!("necko7-queue-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let mut settings = Settings::load(&path).unwrap();
+        let token = settings.local_token.clone();
+        let device = uuid::Uuid::new_v4();
+        settings.pairing = Some(Pairing {
+            device_id: device,
+            channel: Channel {
+                twitch_id: "qa".into(),
+                username: "qa".into(),
+                display_name: "QA".into(),
+                avatar_url: None,
+            },
+        });
+        let (pending, mut rx) = tokio::sync::mpsc::channel(2);
+        let state = Arc::new(App {
+            inner: Mutex::new(Inner {
+                settings,
+                key: Ok(ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng)),
+                session: uuid::Uuid::new_v4(),
+                seq: 0,
+                heartbeat_session: uuid::Uuid::new_v4(),
+                heartbeat_seq: 0,
+                gsi: String::new(),
+                listener: String::new(),
+                cloud: String::new(),
+                last_gsi: None,
+                last_gsi_at: None,
+                forwarding_error: None,
+                pairing_code: String::new(),
+                pairing_busy: false,
+                error: None,
+            }),
+            quitting: AtomicBool::new(false),
+            heartbeat_requested: tokio::sync::Notify::new(),
+            operations: tokio::sync::Mutex::new(()),
+            client: reqwest::Client::new(),
+            base: Ok("http://127.0.0.1:1".into()),
+            path,
+            port: 31338,
+            pending,
+            cancel: tokio_util::sync::CancellationToken::new(),
+            tasks: tokio_util::task::TaskTracker::new(),
+        });
+        for round in 0..2 {
+            assert_eq!(receive(State(state.clone()),Ok(Json(serde_json::json!({"auth":{"token":token},"map":{"round":round},"round":{"phase":"over"}})))).await,StatusCode::NO_CONTENT);
+        }
+        assert_eq!(
+            receive(
+                State(state.clone()),
+                Ok(Json(
+                    serde_json::json!({"auth":{"token":token},"map":{"round":2}})
+                ))
+            )
+            .await,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(state.inner.lock().unwrap().seq, 2);
+        assert!(state.inner.lock().unwrap().last_gsi.is_some());
+        for round in 0..2 {
+            let signed = rx.recv().await.unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&signed.body).unwrap();
+            assert_eq!(body["gsi"]["map"]["round"], round);
+            assert_eq!(body["seq"], round + 1);
+            assert!(body["gsi"].get("auth").is_none());
+            assert_eq!(signed.device_id, device);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
