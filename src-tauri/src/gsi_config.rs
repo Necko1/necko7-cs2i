@@ -15,6 +15,7 @@ pub fn render(token: &str, port: u16) -> String {
         "provider" "1"
         "map" "1"
         "round" "1"
+        "phase_countdowns" "1"
         "player_id" "1"
         "player_state" "1"
         "player_weapons" "1"
@@ -38,8 +39,10 @@ pub fn install(dir: &Path, token: &str, port: u16) -> Result<std::path::PathBuf,
     Ok(path)
 }
 pub fn remove_owned(path: &Path, token: &str, port: u16) {
+    let current = render(token, port);
+    let legacy = current.replace("        \"phase_countdowns\" \"1\"\n", "");
     if path.file_name().and_then(|s| s.to_str()) == Some(NAME)
-        && std::fs::read_to_string(path).is_ok_and(|s| s == render(token, port))
+        && std::fs::read_to_string(path).is_ok_and(|s| s == current || s == legacy)
     {
         let _ = std::fs::remove_file(path);
     }
@@ -74,5 +77,27 @@ mod tests {
         assert!(keyvalues_parser::parse(&text).is_ok());
         assert!(text.contains("http://127.0.0.1:31337/gsi"));
         assert!(text.contains("player_match_stats"));
+        assert!(text.contains("\"phase_countdowns\" \"1\""));
+        for category in ["allplayers", "position", "grenades"] {
+            assert!(!text.contains(category));
+        }
+    }
+    #[test]
+    fn cleanup_accepts_exact_legacy_config_but_preserves_user_edits() {
+        let dir = std::env::temp_dir().join(format!("necko7-legacy-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join(NAME);
+        let current = render("safe-token", 31337);
+        std::fs::write(&path, format!("{current}// user edit\n")).unwrap();
+        remove_owned(&path, "safe-token", 31337);
+        assert!(path.exists());
+        std::fs::write(
+            &path,
+            current.replace("        \"phase_countdowns\" \"1\"\n", ""),
+        )
+        .unwrap();
+        remove_owned(&path, "safe-token", 31337);
+        assert!(!path.exists());
+        std::fs::remove_dir(&dir).unwrap();
     }
 }
