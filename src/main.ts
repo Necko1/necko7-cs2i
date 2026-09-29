@@ -31,16 +31,16 @@ element<HTMLImageElement>("avatar").addEventListener("error", () => {
   element("avatar-fallback").hidden = false;
 });
 const settings = element<HTMLDialogElement>("settings");
-function showError(message: string) {
+function showError(message: string, surface: "main" | "settings" = "main") {
   const duplicate =
     !settings.open &&
     !!message &&
     [element("gsi").title, element("cloud").title, element("identity").textContent].includes(message);
   if (duplicate) message = "";
-  element(settings.open ? "settings-error" : "error").textContent = message;
+  element(surface === "settings" ? "settings-error" : "error").textContent = message;
 }
 let busy = false;
-let localError = "";
+const localErrors = new Map<string, string>();
 let confirmCommand: string | null = null;
 async function refresh() {
   if (busy) return;
@@ -48,7 +48,14 @@ async function refresh() {
     const status = await invoke<Status>("status");
     render(status);
     if (status.pairing_busy && settings.open) settings.close();
-    showError(status.error ?? localError);
+    if (status.pairing && !status.pairing_busy) localErrors.delete("pair");
+    const pairingError = !status.pairing && status.error_scope !== "persistence" ? status.error : null;
+    const mainError = [...localErrors].find(([command]) =>
+      !["preferences", "unpair", "reset_identity"].includes(command) ||
+      (command === "preferences" && !status.pairing && !settings.open))?.[1];
+    const settingsError = [...localErrors].find(([command]) => ["preferences", "unpair", "reset_identity"].includes(command))?.[1];
+    showError(pairingError ?? (status.error_scope === "persistence" ? status.error : null) ?? mainError ?? "");
+    showError(settingsError ?? "", "settings");
   } catch {
     showError("Desktop services unavailable. Restart the app.");
   }
@@ -56,9 +63,7 @@ async function refresh() {
 async function action(command: string, args?: Record<string, unknown>) {
   if (busy) return;
   busy = true;
-  localError = "";
-  element("error").textContent = "";
-  element("settings-error").textContent = "";
+  localErrors.delete(command);
   document
     .querySelectorAll<HTMLButtonElement | HTMLInputElement>("button,input")
     .forEach((el) => (el.disabled = true));
@@ -71,8 +76,7 @@ async function action(command: string, args?: Record<string, unknown>) {
       settings.close();
     }
   } catch (error) {
-    localError = String(error);
-    showError(localError);
+    localErrors.set(command, String(error));
   } finally {
     busy = false;
     document

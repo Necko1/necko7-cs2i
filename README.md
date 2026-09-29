@@ -1,6 +1,6 @@
 # necko7 CS2 Integration
 
-Windows companion for the existing necko7 backend and dashboard. Event/reward processing is intentionally **Coming soon**.
+Windows companion for the necko7 backend and scripting dashboard. The companion forwards authenticated game observations; scripts and rewards execute in the backend, not on the desktop.
 
 ```text
 Dashboard (existing Twitch session, channel OWNER)
@@ -8,7 +8,7 @@ Dashboard (existing Twitch session, channel OWNER)
   -> Windows companion -> public key registration -> existing broadcaster
 CS2 -> POST 127.0.0.1:31337/gsi -> local token validation
   -> exact-byte Ed25519 signature -> HTTPS necko7 /api/v1/cs2/gsi
-  -> signature + timestamp + persisted replay checks -> future event boundary
+  -> signature + timestamp + persisted replay checks -> normalized events / scripting
 ```
 
 ## Prerequisites
@@ -39,12 +39,21 @@ npm run dev -- --host localhost --port 5173
 cd .\necko7-cs2i
 npm ci
 $env:CS2_API_URL='http://localhost:8080'
+$env:CS2_DASHBOARD_URL='http://localhost:5173'
 npm run tauri -- dev
 ```
 
 Desktop defaults to the existing backend origin `https://7.necko.moe`. `CS2_API_URL` may override it with another HTTPS origin; HTTP is accepted **only in debug builds and only on loopback**. Redirects are disabled. `CS2_GSI_PORT` is a debug-only override; production uses 31337. Restart CS2 after first config installation. In development, enter the pairing code manually or pass a URI as a process argument; installed NSIS bundles register the scheme automatically.
 
-Open the dashboard's **CS2 Integration** navigation item as channel OWNER. Editors/viewers cannot issue codes or manage devices. The page polls status every 15 seconds, counts down the code lifetime, and creates a replacement only while unpaired. A single active device is supported per channel. Unpair it before changing computers.
+Open **Scripts > CS2 Integration** as channel OWNER to pair. Editors can use Scripts and inspect integration status, but cannot issue codes or manage device authority. The page polls status every 15 seconds, counts down the code lifetime, and creates a replacement only while unpaired. Check connection rechecks status without invalidating a valid code; Retry is shown only for failed requests. A single active device is supported per channel. Unpair it before changing computers.
+
+### Separate frontend and backend URLs
+
+`CS2_API_URL` is backend transport only. `CS2_DASHBOARD_URL` is the frontend dashboard URL and must be set in the environment for production builds. Cargo embeds it; a runtime environment value overrides the embedded value. Open Dashboard accepts HTTP(S) without credentials, opens `/scripts/cs2`, and removes any query/fragment. It never falls back to the API origin. Debug builds without this setting use `http://127.0.0.1:4173`; explicitly override it for another development port.
+
+Set the GitHub Actions repository variable **CS2_DASHBOARD_URL** before publishing an installer release. The existing release workflow validates and embeds it. A missing production value produces an actionable opener error instead of silently opening the backend. The `.env.example` lists these variables, but the native app does not automatically load dotenv files: export them in PowerShell (`$env:...`) or the build environment. No production domain is hardcoded for the dashboard.
+
+The public [scripting documentation](../necko7-frontend/docs/README.md) covers Owner/Editor access, pairing and automation workflows.
 
 ## Windows setup and lifecycle
 
@@ -72,7 +81,7 @@ npm ci
 npm run tauri -- build --bundles nsis
 ```
 
-Output: `src-tauri/target/release/bundle/nsis/necko7-cs2i_0.2.0_x64-setup.exe`.
+Output: `src-tauri/target/release/bundle/nsis/necko7-cs2i_0.2.1_x64-setup.exe`.
 
 The current-user NSIS bundle registers `necko7-cs2i://` and uses Tauri's normal uninstall registration cleanup. A minimal pre-uninstall hook first stops the running app through Tauri's standard process check, then invokes Rust cleanup to disable autostart and remove only an exact matching owned config. Upgrade uninstalls skip that cleanup. User settings/key are retained for reinstall; revoke the device in the dashboard if retiring the computer.
 

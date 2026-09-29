@@ -80,6 +80,8 @@ mod tests {
         let base = format!("http://{}", listener.local_addr().unwrap());
         let response_status = Arc::new(std::sync::atomic::AtomicU16::new(401));
         let heartbeat_status = response_status.clone();
+        let reject_pair = Arc::new(AtomicBool::new(true));
+        let pair_status = reject_pair.clone();
         let router = Router::new()
             .route("/api/v1/cs2/devices/heartbeat", post(move |headers: HeaderMap, body: Bytes| {
                     let heartbeat_status = heartbeat_status.clone();
@@ -92,8 +94,12 @@ mod tests {
                 assert!(payload.get("gsi").is_none());
                 StatusCode::from_u16(heartbeat_status.load(std::sync::atomic::Ordering::SeqCst)).unwrap()
             }}))
-            .route("/api/v1/cs2/devices/pair", post(|| async {
-                axum::Json(serde_json::json!({"device_id": uuid::Uuid::new_v4(), "channel": {"twitch_id":"new", "username":"new", "display_name":"New", "avatar_url":null}}))
+            .route("/api/v1/cs2/devices/pair", post(move || {
+                let pair_status = pair_status.clone();
+                async move { (
+                    if pair_status.load(std::sync::atomic::Ordering::SeqCst) { StatusCode::BAD_REQUEST } else { StatusCode::OK },
+                    axum::Json(serde_json::json!({"device_id": uuid::Uuid::new_v4(), "channel": {"twitch_id":"new", "username":"new", "display_name":"New", "avatar_url":null}})),
+                ) }
             }));
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         let dir = std::env::temp_dir().join(format!("necko7-heartbeat-{}", uuid::Uuid::new_v4()));
@@ -157,12 +163,25 @@ mod tests {
             public
         );
         assert!(config.exists());
+        state.inner.lock().unwrap().forwarding_error = Some("Independent forwarding failure".into());
+        let expired = crate::app::pair_device(state.clone(), "4EME-GX7G".into()).await.unwrap_err();
+        assert!(expired.contains("invalid or expired"));
+        assert!(matches!(state.inner.lock().unwrap().error.as_ref().unwrap().scope, crate::app::ErrorScope::Pairing));
+        state.inner.lock().unwrap().error = Some(crate::app::AppError::persistence("Independent settings failure".into()));
+        assert!(crate::app::pair_device(state.clone(), "4EME-GX7G".into()).await.is_err());
+        assert!(matches!(state.inner.lock().unwrap().error.as_ref().unwrap().scope, crate::app::ErrorScope::Persistence));
+        // Restore the pairing failure under test; unrelated forwarding state remains active.
+        state.inner.lock().unwrap().error = None;
+        assert!(crate::app::pair_device(state.clone(), "4EME-GX7G".into()).await.is_err());
+        reject_pair.store(false, std::sync::atomic::Ordering::SeqCst);
         crate::app::pair_device(
             state.clone(),
             crate::deep_link::parse("necko7-cs2i://pair?code=4EME-GX7G").unwrap(),
         )
         .await
         .unwrap();
+        assert!(state.inner.lock().unwrap().error.is_none());
+        assert_eq!(state.inner.lock().unwrap().forwarding_error.as_deref(), Some("Independent forwarding failure"));
         assert_eq!(
             state
                 .inner

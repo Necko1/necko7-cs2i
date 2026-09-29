@@ -2415,7 +2415,7 @@ dependencies = [
 
 [[package]]
 name = "necko7-cs2i"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "axum",
  "base64 0.22.1",

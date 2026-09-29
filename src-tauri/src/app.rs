@@ -15,6 +15,24 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
 use tokio_util::sync::CancellationToken;
 pub type Shared = Arc<App>;
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorScope {
+    Pairing,
+    Persistence,
+}
+pub struct AppError {
+    pub scope: ErrorScope,
+    pub message: String,
+}
+impl AppError {
+    fn pairing(message: String) -> Self {
+        Self { scope: ErrorScope::Pairing, message }
+    }
+    pub(crate) fn persistence(message: String) -> Self {
+        Self { scope: ErrorScope::Persistence, message }
+    }
+}
 pub struct App {
     pub inner: Mutex<Inner>,
     pub quitting: AtomicBool,
@@ -43,7 +61,23 @@ pub struct Inner {
     pub forwarding_error: Option<String>,
     pub pairing_code: String,
     pub pairing_busy: bool,
-    pub error: Option<String>,
+    pub error: Option<AppError>,
+}
+impl Inner {
+    pub(crate) fn save_settings(&mut self, path: &std::path::Path) -> Result<(), String> {
+        match self.settings.save(path) {
+            Ok(()) => {
+                if self.error.as_ref().is_some_and(|e| matches!(e.scope, ErrorScope::Persistence)) {
+                    self.error = None;
+                }
+                Ok(())
+            }
+            Err(error) => {
+                self.error = Some(AppError::persistence(error.clone()));
+                Err(error)
+            }
+        }
+    }
 }
 #[derive(Serialize)]
 pub struct Status {
@@ -59,6 +93,7 @@ pub struct Status {
     pairing_code: String,
     pairing_busy: bool,
     error: Option<String>,
+    error_scope: Option<ErrorScope>,
     identity_error: Option<String>,
     version: &'static str,
 }
@@ -139,7 +174,7 @@ impl App {
                     }
                 }
                 inner.settings.config_path = Some(path);
-                inner.settings.save(&self.path)?;
+                inner.save_settings(&self.path)?;
                 inner.gsi = "GSI config installed — restart CS2 if it was running".into();
                 Ok(())
             }
@@ -194,7 +229,7 @@ impl App {
         inner.last_gsi = None;
         inner.last_gsi_at = None;
         inner.forwarding_error = None;
-        inner.settings.save(&self.path)
+        inner.save_settings(&self.path)
     }
 }
 pub fn show(app: &AppHandle) {
@@ -247,7 +282,8 @@ pub fn status(app: AppHandle, state: tauri::State<'_, Shared>) -> Status {
         forwarding_error: inner.forwarding_error.clone(),
         pairing_code: inner.pairing_code.clone(),
         pairing_busy: inner.pairing_busy,
-        error: inner.error.clone(),
+        error: inner.error.as_ref().map(|e| e.message.clone()),
+        error_scope: inner.error.as_ref().map(|e| e.scope),
         identity_error: inner.key.as_ref().err().cloned(),
         version: env!("CARGO_PKG_VERSION"),
     }
@@ -266,14 +302,22 @@ fn gsi_fresh(age: Option<std::time::Duration>) -> bool {
 }
 
 #[tauri::command]
-pub fn open_dashboard(app: AppHandle, state: tauri::State<'_, Shared>) -> Result<(), String> {
+pub fn open_dashboard(app: AppHandle) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
-    let base = state.base.as_ref().map_err(Clone::clone)?;
-    let origin = std::env::var("CS2_DASHBOARD_URL").unwrap_or_else(|_| base.clone());
+    let origin = dashboard_origin(
+        std::env::var("CS2_DASHBOARD_URL").ok().as_deref(),
+        option_env!("CS2_DASHBOARD_URL"),
+        cfg!(debug_assertions),
+    )?;
     let url = dashboard_url(&origin)?;
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|_| "Unable to open the dashboard in your browser".into())
+}
+fn dashboard_origin(runtime: Option<&str>, bundled: Option<&str>, development: bool) -> Result<String, String> {
+    runtime.filter(|s| !s.trim().is_empty()).or(bundled.filter(|s| !s.trim().is_empty())).map(str::to_owned)
+        .or_else(|| development.then(|| "http://127.0.0.1:4173".into()))
+        .ok_or_else(|| "Dashboard URL is not configured. Set CS2_DASHBOARD_URL to the frontend origin.".into())
 }
 fn dashboard_url(origin: &str) -> Result<String, String> {
     let mut url = url::Url::parse(origin).map_err(|_| "Invalid dashboard URL")?;
@@ -316,6 +360,39 @@ pub fn open_channel(app: AppHandle, state: tauri::State<'_, Shared>) -> Result<(
 mod activity_tests {
     use super::*;
     #[test]
+    fn successful_save_clears_only_resolved_persistence_error() {
+        let directory = std::env::temp_dir().join(format!("necko7-settings-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("settings.json");
+        let mut inner = Inner {
+            settings: Settings::load(&path).unwrap(),
+            key: Err("Not used by this settings test".into()),
+            session: uuid::Uuid::new_v4(),
+            seq: 0,
+            heartbeat_session: uuid::Uuid::new_v4(),
+            heartbeat_seq: 0,
+            gsi: String::new(),
+            listener: String::new(),
+            cloud: String::new(),
+            last_gsi: None,
+            last_gsi_at: None,
+            forwarding_error: Some("Forwarding remains unavailable".into()),
+            pairing_code: String::new(),
+            pairing_busy: false,
+            error: None,
+        };
+        assert!(inner.save_settings(&directory.join("missing/settings.json")).is_err());
+        assert!(matches!(inner.error.as_ref().unwrap().scope, ErrorScope::Persistence));
+        inner.save_settings(&path).unwrap();
+        assert!(inner.error.is_none());
+        assert!(inner.forwarding_error.is_some());
+        inner.error = Some(AppError::pairing("Expired code".into()));
+        inner.save_settings(&path).unwrap();
+        assert!(matches!(inner.error.as_ref().unwrap().scope, ErrorScope::Pairing));
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+    #[test]
     fn local_receipt_freshness_expires_at_sixty_seconds() {
         assert!(!gsi_fresh(None));
         assert!(gsi_fresh(Some(std::time::Duration::from_secs(59))));
@@ -333,6 +410,11 @@ mod activity_tests {
         );
         assert!(dashboard_url("https://user:password@example.test").is_err());
         assert!(dashboard_url("javascript:alert(1)").is_err());
+        assert_eq!(dashboard_origin(None, None, true).unwrap(), "http://127.0.0.1:4173");
+        assert!(dashboard_origin(None, None, false).is_err());
+        assert_eq!(dashboard_origin(Some("https://frontend.test"), Some("https://bundled.test"), false).unwrap(), "https://frontend.test");
+        assert_eq!(dashboard_origin(None, Some("https://frontend.test"), false).unwrap(), "https://frontend.test");
+        assert_eq!(dashboard_origin(Some(""), Some("https://frontend.test"), false).unwrap(), "https://frontend.test");
     }
     #[test]
     fn main_window_is_fixed_size_and_not_maximizable() {
@@ -368,7 +450,9 @@ pub async fn pair_device(state: Shared, code: String) -> Result<(), String> {
         );
         inner.pairing_busy = true;
         inner.pairing_code = code.clone();
-        inner.error = None;
+        if inner.error.as_ref().is_some_and(|e| matches!(e.scope, ErrorScope::Pairing)) {
+            inner.error = None;
+        }
         public
     };
     let result: Result<Pairing,String> = async {
@@ -387,17 +471,19 @@ pub async fn pair_device(state: Shared, code: String) -> Result<(), String> {
     inner.pairing_busy = false;
     match result {
         Ok(pairing) => {
+            if inner.error.as_ref().is_some_and(|e| matches!(e.scope, ErrorScope::Pairing)) {
+                inner.error = None;
+            }
             inner.settings.pairing = Some(pairing);
             inner.pairing_code.clear();
             inner.cloud = "Paired — checking desktop connection".into();
             state.heartbeat_requested.notify_one();
-            inner
-                .settings
-                .save(&state.path)
-                .inspect_err(|e| inner.error = Some(e.clone()))
+            inner.save_settings(&state.path)
         }
         Err(error) => {
-            inner.error = Some(error.clone());
+            if inner.error.as_ref().is_none_or(|e| matches!(e.scope, ErrorScope::Pairing)) {
+                inner.error = Some(AppError::pairing(error.clone()));
+            }
             Err(error)
         }
     }
@@ -448,7 +534,7 @@ pub fn preferences(
     .map_err(|_| "Cannot change Windows startup setting")?;
     let mut inner = state.inner.lock().unwrap();
     inner.settings.minimize_to_tray = minimize;
-    inner.settings.save(&state.path)
+    inner.save_settings(&state.path)
 }
 #[tauri::command]
 pub async fn reset_identity(state: tauri::State<'_, Shared>) -> Result<(), String> {
@@ -461,7 +547,7 @@ pub async fn reset_identity(state: tauri::State<'_, Shared>) -> Result<(), Strin
     inner.key.as_ref().map_err(Clone::clone)?;
     inner.settings.pairing = None;
     inner.error = None;
-    inner.settings.save(&state.path)
+    inner.save_settings(&state.path)
 }
 pub fn deep_link(app: &AppHandle, input: &str) {
     show(app);
@@ -474,10 +560,18 @@ pub fn deep_link(app: &AppHandle, input: &str) {
             let state = state.inner().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = pair_device(state.clone(), code).await {
-                    state.inner.lock().unwrap().error = Some(error);
+                    let mut inner = state.inner.lock().unwrap();
+                    if inner.error.as_ref().is_none_or(|e| matches!(e.scope, ErrorScope::Pairing)) {
+                        inner.error = Some(AppError::pairing(error));
+                    }
                 }
             });
         }
-        Err(error) => state.inner.lock().unwrap().error = Some(error),
+        Err(error) => {
+            let mut inner = state.inner.lock().unwrap();
+            if inner.error.as_ref().is_none_or(|e| matches!(e.scope, ErrorScope::Pairing)) {
+                inner.error = Some(AppError::pairing(error));
+            }
+        }
     }
 }

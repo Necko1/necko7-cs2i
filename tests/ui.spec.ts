@@ -24,7 +24,7 @@ const healthy: Status = {
   pairing_busy: false,
   error: null,
   identity_error: null,
-  version: "0.2.0",
+  version: "0.2.1",
 };
 async function fixture(page: Page, changes: Partial<Status> = {}) {
   await page.addInitScript(
@@ -88,6 +88,25 @@ async function screenshot(page: Page, state: string) {
   }
   await page.screenshot({ path: `../.qa/companion-redesign/final-${state}-browser.png` });
 }
+
+test("successful external pairing clears obsolete pairing errors without leaking into Settings", async ({ page }) => {
+  await fixture(page, { pairing: null });
+  await page.evaluate(() => {
+    (window as any).qaRejectCommand = "pair";
+    (window as any).qaFailure = "Pairing code invalid or expired. Get a new code in the dashboard.";
+  });
+  await page.getByLabel("Pairing code").fill("ABCD-2345");
+  await page.getByRole("button", { name: "Connect channel" }).click();
+  await expect(page.locator("#error")).toContainText("invalid or expired");
+  await page.evaluate(() => {
+    (window as any).qaStatus.pairing = { device_id: "external", channel: { twitch_id: "123", username: "necko", display_name: "Necko", avatar_url: null } };
+  });
+  await expect(page.locator("#channel")).toBeVisible();
+  await expect(page.locator("#error")).toHaveText("");
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(page.locator("#settings-error")).toHaveText("");
+  await page.screenshot({ path: "../.qa/productization/companion-cleared-error.png" });
+});
 test("healthy paired state is compact and local activity is independent of cloud", async ({
   page,
 }) => {
@@ -106,6 +125,57 @@ test("healthy paired state is compact and local activity is independent of cloud
     ),
   ).toEqual(["open_dashboard", "open_channel"]);
   await screenshot(page, "active");
+});
+
+test("manual pairing retry clears only pairing errors and Settings scopes its own failures", async ({ page }) => {
+  await fixture(page, { pairing: null, forwarding_error: "Cloud unavailable or timed out" });
+  await page.evaluate(() => {
+    (window as any).qaRejectCommand = "pair";
+    (window as any).qaFailure = "Pairing code invalid or expired. Get a new code in the dashboard.";
+  });
+  await page.getByLabel("Pairing code").fill("ABCD-2345");
+  await page.getByRole("button", { name: "Connect channel" }).click();
+  await expect(page.locator("#error")).toContainText("invalid or expired");
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(page.locator("#settings-error")).toHaveText("");
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => { (window as any).qaRejectCommand = undefined; });
+  await page.getByRole("button", { name: "Connect channel" }).click();
+  await expect(page.locator("#channel")).toBeVisible();
+  await expect(page.locator("#error")).toHaveText("");
+  await expect(page.locator("#cloud")).toContainText("Can't send game updates");
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.evaluate(() => {
+    (window as any).qaRejectCommand = "preferences";
+    (window as any).qaFailure = "Cannot change Windows startup";
+  });
+  await page.getByRole("dialog").getByLabel("Start with Windows", { exact: true }).click();
+  await expect(page.locator("#settings-error")).toHaveText("Cannot change Windows startup");
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Open Dashboard" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(page.locator("#settings-error")).toHaveText("Cannot change Windows startup");
+  await page.evaluate(() => { (window as any).qaRejectCommand = undefined; });
+  await page.getByRole("dialog").getByLabel("Start with Windows", { exact: true }).check();
+  await expect(page.locator("#settings-error")).toHaveText("");
+});
+
+test("persistence and onboarding preference failures are not silently hidden", async ({ page }) => {
+  await fixture(page, { pairing: null });
+  await page.evaluate(() => {
+    (window as any).qaRejectCommand = "preferences";
+    (window as any).qaFailure = "Cannot change Windows startup";
+  });
+  await page.locator("#onboarding-autostart").click();
+  await expect(page.locator("#error")).toHaveText("Cannot change Windows startup");
+  await page.evaluate(() => {
+    (window as any).qaStatus.pairing = { device_id: "external", channel: { twitch_id: "123", username: "necko", display_name: "Necko", avatar_url: null } };
+    (window as any).qaStatus.error = "Cannot save desktop settings";
+    (window as any).qaStatus.error_scope = "persistence";
+  });
+  await expect(page.locator("#error")).toHaveText("Cannot save desktop settings");
+  await page.getByRole("button", { name: "Open Dashboard" }).click();
+  await expect(page.locator("#error")).toHaveText("Cannot save desktop settings");
 });
 test("unpaired flow prevents duplicate pairing and becomes paired", async ({
   page,
@@ -155,7 +225,7 @@ test("settings trap focus, close with Escape and restore focus without changing 
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Settings" });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText("Version 0.2.0")).toBeVisible();
+  await expect(dialog.getByText("Version 0.2.1")).toBeVisible();
   for (let i = 0; i < 8; i++) {
     await page.keyboard.press("Tab");
     expect(

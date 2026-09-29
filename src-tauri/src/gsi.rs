@@ -108,7 +108,7 @@ pub async fn forward(state: Shared, mut rx: tokio::sync::mpsc::Receiver<crate::c
             Ok(status) if status.is_success() => "Connected".into(),
             Ok(status) if matches!(status.as_u16(), 401 | 403) => {
                 if let Err(error) = state.clear_pairing() {
-                    state.inner.lock().unwrap().error = Some(error);
+                    state.inner.lock().unwrap().error = Some(crate::app::AppError::persistence(error));
                 }
                 "Device revoked or rejected — pair again".into()
             }

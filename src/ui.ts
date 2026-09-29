@@ -16,6 +16,7 @@ export interface Status {
   pairing_code: string;
   pairing_busy: boolean;
   error: string | null;
+  error_scope?: "pairing" | "persistence" | null;
   identity_error: string | null;
   version: string;
   gsi_active: boolean;

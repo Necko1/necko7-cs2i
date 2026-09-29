@@ -16,6 +16,8 @@ jobs:
     name: Windows x64 NSIS installer
     runs-on: windows-latest
     timeout-minutes: 45
+    env:
+      CS2_DASHBOARD_URL: ${{ vars.CS2_DASHBOARD_URL }}
     permissions:
       contents: write
     defaults:
@@ -50,7 +52,16 @@ jobs:
         run: npm ci
 
       - name: Build the NSIS installer
-        run: npm run tauri -- build --ci --bundles nsis -- --locked
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CS2_DASHBOARD_URL)) {
+            throw 'Set the repository variable CS2_DASHBOARD_URL to the frontend dashboard origin.'
+          }
+          $dashboard = [Uri]$env:CS2_DASHBOARD_URL
+          if (-not $dashboard.IsAbsoluteUri -or $dashboard.Scheme -notin @('http', 'https') -or $dashboard.UserInfo) {
+            throw 'CS2_DASHBOARD_URL must be an absolute HTTP(S) URL without credentials.'
+          }
+          npm run tauri -- build --ci --bundles nsis -- --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
 
       - name: Attach the installer to the existing release
         env:
