@@ -84,6 +84,7 @@ pub struct Status {
     pairing: Option<Pairing>,
     minimize_to_tray: bool,
     autostart: bool,
+    startup_error: Option<String>,
     gsi: String,
     listener: String,
     cloud: String,
@@ -258,7 +259,7 @@ pub fn shutdown(app: &AppHandle) {
 }
 #[tauri::command]
 pub fn status(app: AppHandle, state: tauri::State<'_, Shared>) -> Status {
-    use tauri_plugin_autostart::ManagerExt;
+    let startup = crate::startup::is_enabled(&app);
     let inner = state.inner.lock().unwrap();
     let gsi = if inner
         .settings
@@ -273,7 +274,8 @@ pub fn status(app: AppHandle, state: tauri::State<'_, Shared>) -> Status {
     Status {
         pairing: inner.settings.pairing.clone(),
         minimize_to_tray: inner.settings.minimize_to_tray,
-        autostart: app.autolaunch().is_enabled().unwrap_or(false),
+        autostart: startup.as_ref().copied().unwrap_or(false),
+        startup_error: startup.err(),
         gsi,
         listener: inner.listener.clone(),
         cloud: inner.cloud.clone(),
@@ -525,13 +527,7 @@ pub fn preferences(
     autostart: bool,
     minimize: bool,
 ) -> Result<(), String> {
-    use tauri_plugin_autostart::ManagerExt;
-    if autostart {
-        app.autolaunch().enable()
-    } else {
-        app.autolaunch().disable()
-    }
-    .map_err(|_| "Cannot change Windows startup setting")?;
+    crate::startup::set_enabled(&app, autostart)?;
     let mut inner = state.inner.lock().unwrap();
     inner.settings.minimize_to_tray = minimize;
     inner.save_settings(&state.path)

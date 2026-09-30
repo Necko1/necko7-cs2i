@@ -63,6 +63,8 @@ Steam roots come from HKCU/HKLM registry views. A VDF parser reads modern and le
 
 Normal launch shows the window. `--autostart` initializes services hidden in the tray. Start with Windows is disabled initially and requires an explicit Settings toggle. Closing hides the window when Minimize to tray is enabled. Tray Open focuses it; Exit cancels background work and terminates. Single-instance/deep-link plugins deliver subsequent links to the running process. Only the exact scheme/host, one `code` parameter, and a validated eight-character code are accepted.
 
+Windows startup runs **after the current user signs in**, rather than before the login screen. The Windows registration quotes the complete executable path, includes `--autostart`, and verifies the saved command and StartupApproved state before reporting success. Settings reads the actual registration for the current executable and reports registry read failures. On launch, the client repairs an exact legacy unquoted entry for itself only if Windows has not disabled it. An absent entry, a different installation's entry, and a Task Manager opt-out are preserved. Enabling the toggle explicitly re-enables the Windows startup entry; disabling or uninstall cleanup removes this application's Run and StartupApproved values.
+
 ## Security and failure behavior
 
 - Five-minute random codes use an ambiguity-free alphabet, are stored as SHA-256 hashes, replaced per channel, and consumed inside a PostgreSQL transaction. Broadcaster locking also serializes generation, pairing and dashboard revocation.

@@ -160,6 +160,15 @@ test("manual pairing retry clears only pairing errors and Settings scopes its ow
   await expect(page.locator("#settings-error")).toHaveText("");
 });
 
+test("Windows startup read errors are visible in Settings and clear after recovery", async ({ page }) => {
+  await fixture(page, { autostart: false, startup_error: "Cannot read Windows startup setting: Access is denied" });
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(page.locator("#settings-error")).toContainText("Access is denied");
+  await expect(page.getByRole("dialog").getByLabel("Start with Windows", { exact: true })).not.toBeChecked();
+  await page.evaluate(() => { (window as any).qaStatus.startup_error = null; });
+  await expect(page.locator("#settings-error")).toHaveText("");
+});
+
 test("persistence and onboarding preference failures are not silently hidden", async ({ page }) => {
   await fixture(page, { pairing: null });
   await page.evaluate(() => {

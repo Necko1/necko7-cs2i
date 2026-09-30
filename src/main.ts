@@ -55,7 +55,7 @@ async function refresh() {
       (command === "preferences" && !status.pairing && !settings.open))?.[1];
     const settingsError = [...localErrors].find(([command]) => ["preferences", "unpair", "reset_identity"].includes(command))?.[1];
     showError(pairingError ?? (status.error_scope === "persistence" ? status.error : null) ?? mainError ?? "");
-    showError(settingsError ?? "", "settings");
+    showError(settingsError ?? status.startup_error ?? "", "settings");
   } catch {
     showError("Desktop services unavailable. Restart the app.");
   }

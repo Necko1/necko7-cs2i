@@ -10,6 +10,7 @@ export interface Status {
   } | null;
   minimize_to_tray: boolean;
   autostart: boolean;
+  startup_error?: string | null;
   gsi: string;
   listener: string;
   cloud: string;

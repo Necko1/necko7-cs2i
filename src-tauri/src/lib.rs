@@ -8,6 +8,7 @@ mod identity;
 mod lifecycle;
 mod settings;
 mod steam;
+mod startup;
 mod tray;
 use tauri::Manager;
 use tauri_plugin_deep_link::DeepLinkExt;
@@ -45,8 +46,7 @@ pub fn run() {
             std::fs::create_dir_all(&dir)?;
             let path = dir.join("settings.json");
             if cleanup {
-                use tauri_plugin_autostart::ManagerExt;
-                let _ = application.autolaunch().disable();
+                let _ = startup::set_enabled(application.handle(), false);
                 if let Ok(settings) = settings::Settings::load(&path) {
                     if let Some(path) = settings.config_path {
                         gsi_config::remove_owned(&path, &settings.local_token, 31337);
@@ -56,6 +56,7 @@ pub fn run() {
                 return Ok(());
             }
             let (state, rx) = app::App::new(path).map_err(std::io::Error::other)?;
+            startup::repair_existing();
             application.manage(state.clone());
             tray::install(application)?;
             let discovery = state.clone();
